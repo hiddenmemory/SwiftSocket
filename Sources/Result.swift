@@ -24,40 +24,17 @@ public enum Result {
     }
 }
 
-public enum ListenResult {
-    case success
+public enum ReadResult {
+    case success([Byte])
     case failure(Error)
-    case idle
+    case close
+
     public var isSuccess: Bool {
         switch self {
             case .success:
                 return true
             default:
                 return false
-        }
-    }
-    public var isFailure: Bool {
-        switch self {
-            case .failure:
-                return true
-            default:
-                return false
-        }
-    }
-    public var isIdle: Bool {
-        switch self {
-            case .idle:
-                return true
-            default:
-                return false
-        }
-    }
-    public var error: Error? {
-        switch self {
-            case .failure(let error):
-                return error
-            default:
-                return nil
         }
     }
 }

@@ -36,17 +36,28 @@ import Foundation
 
 @_silgen_name("ytcpsocket_send") private func c_ytcpsocket_send(_ fd: Int32, buff: UnsafePointer<Byte>, len: Int32) -> Int32
 
-@_silgen_name("ytcpsocket_pull") private func c_ytcpsocket_pull(_ fd: Int32, buff: UnsafePointer<Byte>, len: Int32, timeout: Int32) -> Int32
+@_silgen_name("ytcpsocket_pull") private func c_ytcpsocket_pull(_ fd: Int32, buff: UnsafePointer<Byte>, len: size_t) -> size_t
 
 @_silgen_name("ytcpsocket_bind") private func c_ytcpsocket_bind(_ address: UnsafePointer<Int8>, port: Int32) -> Int32
 
-@_silgen_name("ytcpsocket_listen") private func c_ytcpsocket_listen(_ socket: Int32, duration: Int32) -> Int32
+@_silgen_name("ytcpsocket_listen") private func c_ytcpsocket_listen(_ socket: Int32) -> Int32
 
 @_silgen_name("ytcpsocket_accept") private func c_ytcpsocket_accept(_ onsocketfd: Int32, ip: UnsafePointer<Int8>, port: UnsafePointer<Int32>, timeout: Int32) -> Int32
 
 @_silgen_name("ytcpsocket_port") private func c_ytcpsocket_port(_ fd: Int32) -> Int32
 
-open class TCPClient: Socket {
+@_silgen_name("ytcpsocket_has_data_pending") private func c_ytcpsocket_has_data_pending(_ socket: Int32, timeout: Int32) -> Int32;
+
+open class TCPSocket : Socket {
+    public var tag: String? = nil
+
+    public var hasDataWaiting: Bool {
+        guard let fd = self.fd else { return false }
+        return c_ytcpsocket_has_data_pending(Int32(fd), timeout: Int32(1)) > 0
+    }
+}
+
+open class TCPClient: TCPSocket {
     /*
      * connect to server
      * return success or fail with message
@@ -132,29 +143,38 @@ open class TCPClient: Socket {
     * read data with expect length
     * return success or fail with message
     */
-    open func read(_ expectlen: Int, timeout: Int = -1) -> [Byte]? {
-        guard let fd: Int32 = self.fd else { return nil }
+    open func read(_ expectlen: Int) -> ReadResult {
+        guard let fd: Int32 = self.fd else { return .failure(SocketError.unknownError) }
 
         var buff = [Byte](repeating: 0x0, count: expectlen)
-        let readLen = c_ytcpsocket_pull(fd, buff: &buff, len: Int32(expectlen), timeout: Int32(timeout))
-        if readLen <= 0 { return nil }
+
+        let readLen = c_ytcpsocket_pull(fd, buff: &buff, len: expectlen)
+
+        if readLen == 0 {
+            return .close
+        }
+
+        if readLen < 0 {
+            return .failure(SocketError.unknownError)
+        }
+
         let rs = buff[0...Int(readLen - 1)]
         let data: [Byte] = Array(rs)
-
-        return data
+        return .success(data)
     }
 }
 
-open class TCPServer: Socket {
+open class TCPServer: TCPSocket {
     public convenience init(port: Int32) {
         self.init(address: "", port: port)
     }
-    open func listen() -> ListenResult {
+    open func start() -> Result {
         let result: Result = self.bind()
 
         switch result {
-            case .success: return self.listen(duration: 0)
-            case let .failure(error): return .failure(error)
+            case .success: return self.listen()
+            default:
+                return result
         }
     }
 
@@ -169,13 +189,11 @@ open class TCPServer: Socket {
         }
     }
 
-    open func listen(duration: Int) -> ListenResult {
+    open func listen() -> Result {
         guard let server_fd = self.fd else { return .failure(SocketError.unknownError) }
-        let fd = c_ytcpsocket_listen(server_fd, duration: Int32(duration))
+        let fd = c_ytcpsocket_listen(server_fd)
 
-        if fd == 0 {
-            return .idle
-        } else if fd > 0 {
+        if fd > 0 {
             self.fd = fd
 
             // If port 0 is used, get the actual port number which the server is listening to
@@ -199,13 +217,13 @@ open class TCPServer: Socket {
 
         var buff: [Int8] = [Int8](repeating: 0x0, count: 16)
         var port: Int32 = 0
-        let clientfd: Int32 = c_ytcpsocket_accept(serferfd, ip: &buff, port: &port, timeout: timeout)
+        let incoming_fd: Int32 = c_ytcpsocket_accept(serferfd, ip: &buff, port: &port, timeout: timeout)
 
-        guard clientfd >= 0 else { return nil }
+        guard incoming_fd > 0 else { return nil }
         guard let address = String(cString: buff, encoding: String.Encoding.utf8) else { return nil }
 
         let client = TCPClient(address: address, port: port)
-        client.fd = clientfd
+        client.fd = incoming_fd
 
         return client
     }

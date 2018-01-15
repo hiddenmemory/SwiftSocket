@@ -56,6 +56,37 @@ void ytcpsocket_set_block(int socket, int on) {
     }
 }
 
+int ytcpsocket_has_data_pending(int socket_fd, int duration) {
+    fd_set master;    // master file descriptor list
+
+    FD_ZERO(&master);    // clear the master and temp sets
+    FD_SET(socket_fd, &master);
+
+    int64_t real_duration = duration * 1000;
+
+    long seconds = (long) (real_duration / 1000000);
+    int usecs = (int) (real_duration % 1000000);
+
+    struct timeval wait_for;
+    wait_for.tv_sec = seconds;
+    wait_for.tv_usec = usecs;
+
+    struct timeval *wait_for_it = NULL;
+    if( duration > 0 ) {
+        wait_for_it = &wait_for;
+    }
+
+    if( select(socket_fd + 1, &master, NULL, NULL, wait_for_it) == -1 ) {
+        return -1;
+    }
+
+    if( FD_ISSET(socket_fd, &master) ) {
+        return 1;
+    }
+
+    return 0;
+}
+
 int ytcpsocket_connect(const char *host, int port, int timeout) {
     struct sockaddr_in sa;
     struct hostent *hp;
@@ -104,26 +135,19 @@ int ytcpsocket_close(int socketfd) {
     return close(socketfd);
 }
 
-int ytcpsocket_pull(int socketfd, char *data, int len, int timeout_sec) {
-    int readlen = 0;
-    int datalen = 0;
-    if( timeout_sec > 0 ) {
-        fd_set fdset;
-        struct timeval timeout;
-        timeout.tv_usec = 0;
-        timeout.tv_sec = timeout_sec;
-        FD_ZERO(&fdset);
-        FD_SET(socketfd, &fdset);
-        int ret = select(socketfd + 1, &fdset, NULL, NULL, &timeout);
-        if( ret <= 0 ) {
-            return ret; // select-call failed or timeout occurred (before anything was sent)
-        }
-    }
-    // use loop to make sure receive all data
+size_t ytcpsocket_pull(int socketfd, char *data, size_t len) {
+    ssize_t readlen = 0;
+    size_t datalen = 0;
+
     do {
-        readlen = (int) read(socketfd, data + datalen, len - datalen);
+        readlen = read(socketfd, data + datalen, len - datalen);
+
         if( readlen > 0 ) {
             datalen += readlen;
+        }
+
+        if( ytcpsocket_has_data_pending(socketfd, 1) == 0 ) {
+            break;
         }
     } while (readlen > 0);
 
@@ -158,11 +182,9 @@ int ytcpsocket_bind(const char *address, int port) {
     hints.ai_socktype = SOCK_STREAM;
 
     if( bind_all ) {
-        printf("binding to any address on %s\n", port_str);
         hints.ai_flags = AI_PASSIVE;     // fill in my IP for me
         getaddrinfo(NULL, port_str, &hints, &res);
     } else {
-        printf("binding to address: %s:%s\n", address, port_str);
         getaddrinfo(address, port_str, &hints, &res);
     }
 
@@ -177,44 +199,10 @@ int ytcpsocket_bind(const char *address, int port) {
     int result = bind(bound_socket, res->ai_addr, res->ai_addrlen);
 
     if( result == 0 ) {
-        printf("bound to socket: %d\n", bound_socket);
         return bound_socket;
     } else {
         return -1;
     }
-}
-
-int ytcpsocket_has_data_pending(int socket_fd, int duration) {
-    fd_set master;    // master file descriptor list
-
-    FD_ZERO(&master);    // clear the master and temp sets
-    FD_SET(socket_fd, &master);
-
-    printf("checking socket: %d\n", socket_fd);
-
-    int64_t real_duration = duration * 1000;
-
-    long seconds = (long)(real_duration / 1000000);
-    int usecs = (int)(real_duration % 1000000);
-
-    struct timeval wait_for;
-    wait_for.tv_sec = seconds;
-    wait_for.tv_usec = usecs;
-
-    struct timeval *wait_for_it = NULL;
-    if( duration > 0 ) {
-        wait_for_it = &wait_for;
-    }
-
-    if( select(socket_fd + 1, &master, NULL, NULL, wait_for_it) == -1 ) {
-        return -1;
-    }
-
-    if( FD_ISSET(socket_fd, &master) ) {
-        return 1;
-    }
-
-    return 0;
 }
 
 //return socket fd
@@ -232,8 +220,8 @@ int ytcpsocket_accept(int listen_socket, char *remoteip, int *remoteport, int ti
     struct sockaddr_in cli_addr;
     clilen = sizeof(cli_addr);
 
-    printf("waiting to accept\n");
     int status = ytcpsocket_has_data_pending(listen_socket, timeouts);
+
     if( status > 0 ) {
         int incoming_socket = accept(listen_socket, (struct sockaddr *) &cli_addr, &clilen);
         char *incoming_client_ip = inet_ntoa(cli_addr.sin_addr);
@@ -248,7 +236,7 @@ int ytcpsocket_accept(int listen_socket, char *remoteip, int *remoteport, int ti
         }
     }
 
-    return -1;
+    return status;
 }
 
 //return socket port
