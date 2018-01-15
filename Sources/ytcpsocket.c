@@ -143,32 +143,54 @@ int ytcpsocket_send(int socketfd, const char *data, int len) {
 }
 
 int ytcpsocket_bind(const char *address, int port) {
-    //create socket
-    int socketfd = socket(AF_INET, SOCK_STREAM, 0);
-    int reuseon = 1;
-    setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &reuseon, sizeof(reuseon));
+    struct addrinfo hints, *res;
+    int bound_socket;
 
-    //bind
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, '\0', sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = inet_addr(address);
-    serv_addr.sin_port = htons(port);
+    // first, load up address structs with getaddrinfo():
+    int bind_all = (strcmp(address, "0.0.0.0") == 0) || (strcmp(address, "") == 0);
 
-    int result = bind(socketfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
+    char port_str[16];
+
+    snprintf(port_str, 16, "%d", port);
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;  // use IPv4 or IPv6, whichever
+    hints.ai_socktype = SOCK_STREAM;
+
+    if( bind_all ) {
+        printf("binding to any address on %s\n", port_str);
+        hints.ai_flags = AI_PASSIVE;     // fill in my IP for me
+        getaddrinfo(NULL, port_str, &hints, &res);
+    } else {
+        printf("binding to address: %s:%s\n", address, port_str);
+        getaddrinfo(address, port_str, &hints, &res);
+    }
+
+    // make a socket:
+    int reuse_socket = 1;
+
+    bound_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    setsockopt(bound_socket, SOL_SOCKET, SO_REUSEADDR, &reuse_socket, sizeof(reuse_socket));
+
+    // bind it to the port we passed in to getaddrinfo():
+
+    int result = bind(bound_socket, res->ai_addr, res->ai_addrlen);
 
     if( result == 0 ) {
-        return socketfd;
+        printf("bound to socket: %d\n", bound_socket);
+        return bound_socket;
     } else {
         return -1;
     }
 }
 
-int ytcpsocket_has_data_pending(int socketfd, int duration) {
+int ytcpsocket_has_data_pending(int socket_fd, int duration) {
     fd_set master;    // master file descriptor list
 
     FD_ZERO(&master);    // clear the master and temp sets
-    FD_SET(socketfd, &master);
+    FD_SET(socket_fd, &master);
+
+    printf("checking socket: %d\n", socket_fd);
 
     int64_t real_duration = duration * 1000;
 
@@ -184,11 +206,11 @@ int ytcpsocket_has_data_pending(int socketfd, int duration) {
         wait_for_it = &wait_for;
     }
 
-    if( select(FD_SETSIZE, &master, NULL, NULL, wait_for_it) == -1 ) {
+    if( select(socket_fd + 1, &master, NULL, NULL, wait_for_it) == -1 ) {
         return -1;
     }
 
-    if( FD_ISSET(socketfd, &master) ) {
+    if( FD_ISSET(socket_fd, &master) ) {
         return 1;
     }
 
@@ -196,21 +218,11 @@ int ytcpsocket_has_data_pending(int socketfd, int duration) {
 }
 
 //return socket fd
-int ytcpsocket_listen(int listener, int duration) {
-    if( duration == 0 ) {
-        if( listen(listener, 128) == 0 ) {
-            return listener;
-        } else {
-            return -2;//listen error
-        }
+int ytcpsocket_listen(int listener) {
+    if( listen(listener, 128) == 0 ) {
+        return listener;
     } else {
-        int result = ytcpsocket_has_data_pending(listener, duration);
-
-        if( result == 1 && listen(listener, 128) == 0) {
-            return listener;
-        }
-
-        return (result < 0 ? -2 : 0);
+        return -2;//listen error
     }
 }
 
@@ -220,7 +232,8 @@ int ytcpsocket_accept(int listen_socket, char *remoteip, int *remoteport, int ti
     struct sockaddr_in cli_addr;
     clilen = sizeof(cli_addr);
 
-    int status = ytcpsocket_has_data_pending(listen_socket, timeouts * 1000);
+    printf("waiting to accept\n");
+    int status = ytcpsocket_has_data_pending(listen_socket, timeouts);
     if( status > 0 ) {
         int incoming_socket = accept(listen_socket, (struct sockaddr *) &cli_addr, &clilen);
         char *incoming_client_ip = inet_ntoa(cli_addr.sin_addr);
