@@ -42,7 +42,6 @@ open class Socket {
         self.address = address
         self.port = port
     }
-  
 }
 
 public enum SocketError: Error {

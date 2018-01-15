@@ -34,7 +34,8 @@ import Foundation
 @_silgen_name("ytcpsocket_close") private func c_ytcpsocket_close(_ fd:Int32) -> Int32
 @_silgen_name("ytcpsocket_send") private func c_ytcpsocket_send(_ fd:Int32,buff:UnsafePointer<Byte>,len:Int32) -> Int32
 @_silgen_name("ytcpsocket_pull") private func c_ytcpsocket_pull(_ fd:Int32,buff:UnsafePointer<Byte>,len:Int32,timeout:Int32) -> Int32
-@_silgen_name("ytcpsocket_listen") private func c_ytcpsocket_listen(_ address:UnsafePointer<Int8>,port:Int32)->Int32
+@_silgen_name("ytcpsocket_bind") private func c_ytcpsocket_bind(_ address:UnsafePointer<Int8>,port:Int32)->Int32
+@_silgen_name("ytcpsocket_listen") private func c_ytcpsocket_listen(_ socket:Int32, duration:Int32)->Int32
 @_silgen_name("ytcpsocket_accept") private func c_ytcpsocket_accept(_ onsocketfd:Int32,ip:UnsafePointer<Int8>,port:UnsafePointer<Int32>,timeout:Int32) -> Int32
 @_silgen_name("ytcpsocket_port") private func c_ytcpsocket_port(_ fd:Int32) -> Int32
 
@@ -138,11 +139,41 @@ open class TCPClient: Socket {
     }
 }
 
-open class TCPServer: Socket {
+public enum ListenResult {
+    case success
+    case failure(Error)
+    case idle
+}
 
-    open func listen() -> Result {
-        let fd = c_ytcpsocket_listen(self.address, port: Int32(self.port))
-        if fd > 0 {
+open class TCPServer: Socket {
+    open func listen() -> ListenResult {
+        let result: Result = self.bind()
+
+        switch result {
+            case .success: return self.listen(duration: 0)
+            case let .failure(error): return .failure(error)
+        }
+    }
+
+    open func bind() -> Result {
+        let fd = c_ytcpsocket_bind(self.address, port: Int32(self.port))
+        if fd >= 0 {
+            self.fd = fd
+
+            return .success
+        }
+        else {
+            return .failure(SocketError.unknownError)
+        }
+    }
+
+    open func listen(duration: Int) -> ListenResult {
+        guard let server_fd = self.fd else { return .failure(SocketError.unknownError) }
+        let fd = c_ytcpsocket_listen(server_fd, duration: Int32(duration))
+
+        if fd == 0 {
+            return .idle
+        } else if fd > 0 {
             self.fd = fd
             
             // If port 0 is used, get the actual port number which the server is listening to
